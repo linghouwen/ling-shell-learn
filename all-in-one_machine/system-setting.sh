@@ -35,10 +35,12 @@ date_operation() {
     time_zone=$(timedatectl |grep Timezone)
     echo ${local_time}','${time_zone}
   elif [ "$operation" == "U" ]; then
-    update_time=$2
-    update_timezone=$3
-    timedatectl set-time "$update_time"
-    if [ "$update_timezone" != "" ]; then
+    local update_time=$2
+    local update_timezone=$3
+    if [ "$update_time" != "-1" ]; then
+      timedatectl set-time "${update_time}"
+    fi
+    if [ "$update_timezone" != "-1" ]; then
       timedatectl set-timezone $update_timezone
     fi
     timedatectl set-ntp yes
@@ -52,6 +54,7 @@ date_operation() {
   elif [ "$operation" == "S" ]; then
     systemctl restart ntpd
     timedatectl set-ntp yes
+    timedatectl set-local-rtc 1
     ntpq -p
   else
     exit 2
@@ -105,7 +108,7 @@ web_server_operation() {
   if [ "$operation" == "L" ]; then
     http_port=$(cat /etc/httpd/conf/httpd.conf |grep '^Listen '|awk -F' ' '{print $2}')
     https_port=$(cat /etc/httpd/conf.d/ssl.conf |grep '^Listen '|awk -F' ' '{print $2}')
-    result_info="http port:"${http_port}";https port:"{https_port}
+    result_info="http port:"${http_port}";https port:"${https_port}
     echo $result_info
   elif [ "$operation" == "U" ]; then
     http_new_port=$2
@@ -152,15 +155,17 @@ web_server_operation() {
 #ssh server start/stop,set the port of the ssh server
 ssh_server_operation() {
   local operation=$1
-  local port=$2
+  local port="-1"
+  if [ "$operation" == "no_operation" ]; then
+    port=$2
+  fi
+
   if [ "$operation" == "start" ]; then
-    service sshd start
+    systemctl start sshd.service
     exit $?
   elif [ "$operation" == "stop" ]; then
-    service sshd stop
+    systemctl stop sshd.service
     exit $?
-  else
-    exit 2
   fi
 
   if [ "$port" != "-1" ]; then
@@ -183,25 +188,26 @@ ssh_server_operation() {
     service iptables save
 
     #重启shhd服务
-    service sshd restart
+    systemctl restart sshd.service
+    exit $?
 
   fi
 
 }
 
-#The port of PING open/close in the firewall
+#The port of PING start/stop in the firewall
 #iptables -I INPUT -p icmp -j DROP
 #iptables -I OUTPUT -p icmp -j DROP
 #iptables -I INPUT -p icmp -j ACCEPT
 #iptables -I OUTPUT -p icmp -j ACCEPT
 ping_firewall_operation() {
   local operation=$1
-  if [ "$operation" == "open" ]; then
+  if [ "$operation" == "start" ]; then
     iptables -D INPUT -p icmp -j DROP
     iptables -D OUTPUT -p icmp -j DROP
     (iptables -I INPUT -p icmp -j ACCEPT) && (iptables -I OUTPUT -p icmp -j ACCEPT)
     exit $?
-  elif [ "$operation" == "close" ]; then
+  elif [ "$operation" == "stop" ]; then
     iptables -D INPUT -p icmp -j ACCEPT
     iptables -D OUTPUT -p icmp -j ACCEPT
     (iptables -I INPUT -p icmp -j DROP) && (iptables -I OUTPUT -p icmp -j DROP)
@@ -214,12 +220,14 @@ ping_firewall_operation() {
 
 
 hostname=
-update_time=
-update_timezone=
+update_time="-1"
+update_timezone="-1"
 nameservers=
+service_op=
 http_new_port="-1"
 https_new_port="-1"
 ssh_update_port="-1"
+
 
 while getopts 't:LUn:d:z:Ss:h:H:o:p:' OPTION
 do
@@ -267,31 +275,44 @@ if [ "$Tflag" == "1" ]; then
   #host name part
   if [ "$op_type" == "host" ]; then
     host_name_operation $operation $hostname
+    exit $?
   fi
 
   #system date part
   if [ "$op_type" == "date" ]; then
-    date_operation $operation $update_time $update_timezone
+    date_operation $operation "${update_time}" "${update_timezone}"
+    exit $?
   fi
 
   #DNS part
   if [ "$op_type" == "dns" ]; then
     dns_server_operation $operation $nameservers
+    exit $?
   fi
 
   #apache web part
   if [ "$op_type" == "web" ]; then
     web_server_operation $operation $http_new_port $https_new_port
+    exit $?
   fi
 
   #ssh part
   if [ "$op_type" == "ssh" ]; then
-    ssh_server_operation $service_op $ssh_update_port
+    if [ "$service_op" != "" ]; then
+      ssh_server_operation $service_op
+      exit $?
+    fi
+    if [ "$ssh_update_port" != "-1" ]; then
+      ssh_server_operation "no_operation" $ssh_update_port
+      exit $?
+    fi
+    exit 2
   fi
 
   #ping part
   if [ "$op_type" == "ping" ]; then
     ping_firewall_operation $service_op
+    exit $?
   fi
 
 else
